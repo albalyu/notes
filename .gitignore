@@ -137,3 +137,8 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+tz.txt
+
+org-notes/.expo/
+org-notes/tz.txt
