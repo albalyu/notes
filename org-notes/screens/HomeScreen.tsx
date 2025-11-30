@@ -1,16 +1,20 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { FlatList, View, StyleSheet, Alert } from 'react-native';
-import { Appbar, FAB, List, Searchbar, useTheme } from 'react-native-paper';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { FlatList, View, StyleSheet, Alert, ScrollView } from 'react-native';
+import { Appbar, FAB, List, Searchbar, useTheme, Chip } from 'react-native-paper';
 import { useFocusEffect } from '@react-navigation/native';
 import { StorageManager } from '../services/StorageManager';
 import { Note } from '../types/storage';
 
 const storageManager = StorageManager.getInstance();
 
+type SearchCategory = 'all' | 'title' | 'content' | 'date';
+
 export default function HomeScreen({ navigation }) {
   const [notes, setNotes] = useState<Note[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchCategory, setSearchCategory] = useState<SearchCategory>('all');
   const theme = useTheme();
+  const searchTimeout = useRef<NodeJS.Timeout | null>(null);
 
   const fetchNotes = useCallback(async () => {
     try {
@@ -24,30 +28,46 @@ export default function HomeScreen({ navigation }) {
 
   useFocusEffect(
     useCallback(() => {
-      fetchNotes();
+      // Если поиск пуст, обновляем список. Если нет - поиск сам обновит (через useEffect)
+      if (searchQuery.trim() === '') {
+        fetchNotes();
+      } else {
+         performSearch(searchQuery, searchCategory);
+      }
       const unsubscribe = navigation.addListener('focus', fetchNotes);
       return () => unsubscribe();
-    }, [fetchNotes, navigation])
+    }, [fetchNotes, navigation]) // Removed searchQuery dependency to avoid loop reset on return
   );
 
-  useEffect(() => {
-    // Initial fetch when component mounts
-    fetchNotes();
-  }, [fetchNotes]);
-
-  const handleSearch = async () => {
-    if (searchQuery.trim() === '') {
+  const performSearch = async (query: string, category: SearchCategory) => {
+    if (query.trim() === '') {
       fetchNotes();
       return;
     }
     try {
-      const searchedNotes = await storageManager.searchNotes(searchQuery, 'all');
+      const searchedNotes = await storageManager.searchNotes(query, category);
       setNotes(searchedNotes);
     } catch (error) {
       console.error('Failed to search notes:', error);
-      Alert.alert('Ошибка', 'Не удалось выполнить поиск заметок.');
     }
   };
+
+  // Live search effect with debounce
+  useEffect(() => {
+    if (searchTimeout.current) {
+      clearTimeout(searchTimeout.current);
+    }
+
+    searchTimeout.current = setTimeout(() => {
+      performSearch(searchQuery, searchCategory);
+    }, 500); // 500ms delay
+
+    return () => {
+      if (searchTimeout.current) {
+        clearTimeout(searchTimeout.current);
+      }
+    };
+  }, [searchQuery, searchCategory]);
 
   const deleteNote = async (id: string) => {
     Alert.alert(
@@ -60,7 +80,12 @@ export default function HomeScreen({ navigation }) {
           onPress: async () => {
             try {
               await storageManager.deleteNote(id);
-              fetchNotes(); // Refresh the list
+              // Refresh based on current context
+              if (searchQuery.trim() !== '') {
+                performSearch(searchQuery, searchCategory);
+              } else {
+                fetchNotes();
+              }
             } catch (error) {
               console.error('Failed to delete note:', error);
               Alert.alert('Ошибка', 'Не удалось удалить заметку.');
@@ -72,6 +97,17 @@ export default function HomeScreen({ navigation }) {
     );
   };
 
+  const renderCategoryChip = (label: string, value: SearchCategory) => (
+    <Chip
+      selected={searchCategory === value}
+      onPress={() => setSearchCategory(value)}
+      style={styles.chip}
+      showSelectedOverlay
+    >
+      {label}
+    </Chip>
+  );
+
   return (
     <View style={styles.container}>
       <Appbar.Header>
@@ -79,14 +115,21 @@ export default function HomeScreen({ navigation }) {
         <Appbar.Action icon="cog" onPress={() => navigation.navigate('Settings')} />
       </Appbar.Header>
 
-      <Searchbar
-        placeholder="Поиск заметок..."
-        onChangeText={setSearchQuery}
-        value={searchQuery}
-        onIconPress={handleSearch}
-        onSubmitEditing={handleSearch}
-        style={styles.searchBar}
-      />
+      <View style={styles.searchContainer}>
+        <Searchbar
+          placeholder="Поиск..."
+          onChangeText={setSearchQuery}
+          value={searchQuery}
+          style={styles.searchBar}
+          onIconPress={() => performSearch(searchQuery, searchCategory)}
+        />
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipsContainer}>
+          {renderCategoryChip('Везде', 'all')}
+          {renderCategoryChip('Заголовок', 'title')}
+          {renderCategoryChip('Текст', 'content')}
+          {renderCategoryChip('Дата', 'date')}
+        </ScrollView>
+      </View>
 
       <FlatList
         data={notes}
@@ -106,7 +149,11 @@ export default function HomeScreen({ navigation }) {
             style={styles.listItem}
           />
         )}
-        ListEmptyComponent={<List.Item title="Заметок пока нет" description="Нажмите '+' чтобы добавить новую" />}
+        ListEmptyComponent={
+          <View style={styles.emptyContainer}>
+             <List.Item title="Заметок не найдено" description={searchQuery ? "Попробуйте изменить запрос" : "Нажмите '+' чтобы добавить"} />
+          </View>
+        }
       />
 
       <FAB
@@ -114,7 +161,6 @@ export default function HomeScreen({ navigation }) {
         icon="plus"
         onPress={() => navigation.navigate('NoteDetail')}
         color={theme.colors.onPrimary}
-        
       />
     </View>
   );
@@ -124,16 +170,32 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
+  searchContainer: {
+    paddingBottom: 8,
+    backgroundColor: '#f5f5f5',
+  },
   searchBar: {
     margin: 8,
+  },
+  chipsContainer: {
+    paddingHorizontal: 8,
+    flexDirection: 'row',
+  },
+  chip: {
+    marginRight: 8,
   },
   listItem: {
     borderBottomWidth: 1,
     borderBottomColor: '#eee',
     paddingVertical: 5,
+    backgroundColor: 'white',
   },
   listItemActions: {
     flexDirection: 'row',
+    alignItems: 'center',
+  },
+  emptyContainer: {
+    marginTop: 50,
     alignItems: 'center',
   },
   fab: {
@@ -141,6 +203,7 @@ const styles = StyleSheet.create({
     margin: 16,
     right: 0,
     bottom: 0,
-    backgroundColor: '#6200ee', // Example color
+    backgroundColor: '#6200ee',
   },
 });
+
